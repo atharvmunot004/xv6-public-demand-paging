@@ -33,6 +33,39 @@ seginit(void)
 // that corresponds to virtual address va.  If alloc!=0,
 // create any required page table pages.
 static pte_t *
+walkpgdir_dp(pde_t *pgdir, const void *va, int alloc)
+{
+  cprintf ("walkpgdir_dp called:\n");
+  pde_t *pde;
+  pte_t *pgtab;
+
+  pde = &pgdir[PDX(va)];
+  cprintf ("va: %x\n", va);
+  cprintf("pde: %p\n", pde);
+  cprintf("PDE INDEX: %d\n\n", PDX(va));
+  if(*pde & PTE_P){
+    cprintf ("Page table already present\n");
+    cprintf ("pde: %x\n", *pde);
+    cprintf ("PDE_ADDR: %x\n", PTE_ADDR(*pde));
+    cprintf ("P2V: %x\n", P2V(PTE_ADDR(*pde)));
+    pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
+  } else {
+    if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
+      return 0;
+    // Make sure all those PTE_P bits are zero.
+    memset(pgtab, 0, PGSIZE);
+    // The permissions here are overly generous, but they can
+    // be further restricted by the permissions in the page table
+    // entries, if necessary.
+    *pde = V2P(pgtab) | PTE_P| PTE_W | PTE_U;
+  }
+  return &pgtab[PTX(va)];
+}
+
+// Return the address of the PTE in page table pgdir
+// that corresponds to virtual address va.  If alloc!=0,
+// create any required page table pages.
+static pte_t *
 walkpgdir(pde_t *pgdir, const void *va, int alloc)
 {
   pde_t *pde;
@@ -53,6 +86,40 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
   }
   return &pgtab[PTX(va)];
 }
+// Create PTEs for virtual addresses starting at va that refer to
+// physical addresses starting at pa. va and size might not
+// be page-aligned.
+static int
+mappages_dp(pde_t *pgdir, void *va, uint size, uint pa, int perm)
+{
+  cprintf ("mappags_dp called:\n");
+  cprintf ("pgdir: %x\n", pgdir);
+  cprintf ("va: %x\n", va);
+  cprintf ("siz: %d\n", size);
+  cprintf ("pa: %x\tpa: %d\n", pa, pa);
+  cprintf ("perm: %d\n\n", perm);
+  char *a, *last;
+  pte_t *pte;
+
+  a = (char*)PGROUNDDOWN((uint)va);
+  last = (char*)PGROUNDDOWN(((uint)va) + size - 1);
+  for(;;){
+    cprintf ("Mapping pages:\n");
+    cprintf ("a: %x\n", a);
+    cprintf ("last: %x\n", last);
+    if((pte = walkpgdir_dp(pgdir, a, 1)) == 0)
+      return -1;
+    if(*pte & PTE_P)
+      panic("remap");
+    *pte = pa | perm | PTE_P;
+    if(a == last)
+      break;
+    a += PGSIZE;
+    pa += PGSIZE;
+  }
+  return 0;
+}
+
 
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
@@ -203,7 +270,7 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
   if((uint) addr % PGSIZE != 0)
     panic("loaduvm: addr must be page aligned");
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walkpgdir(pgdir, addr+i, 0)) == 0)
+    if((pte = walkpgdir_dp(pgdir, addr+i, 0)) == 0)
       panic("loaduvm: address should exist");
     pa = PTE_ADDR(*pte);
     if(sz - i < PGSIZE)
@@ -221,6 +288,10 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
 int
 allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 {
+  cprintf ("allocuvm called:\n");
+  cprintf ("pgdir: %x\n", pgdir);
+  cprintf ("oldsz: %d\n", oldsz);
+  cprintf ("newsz: %d\n", newsz);
   char *mem;
   uint a;
 
@@ -230,6 +301,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     return oldsz;
 
   a = PGROUNDUP(oldsz);
+  cprintf ("a: %d\n\n", a);
   for(; a < newsz; a += PGSIZE){
     mem = kalloc();
     if(mem == 0){
@@ -238,7 +310,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       return 0;
     }
     memset(mem, 0, PGSIZE);
-    if(mappages(pgdir, (char*)a, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
+    if(mappages_dp(pgdir, (char*)a, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
       cprintf("allocuvm out of memory (2)\n");
       deallocuvm(pgdir, newsz, oldsz);
       kfree(mem);
@@ -304,7 +376,7 @@ clearpteu(pde_t *pgdir, char *uva)
 {
   pte_t *pte;
 
-  pte = walkpgdir(pgdir, uva, 0);
+  pte = walkpgdir_dp(pgdir, uva, 0);
   if(pte == 0)
     panic("clearpteu");
   *pte &= ~PTE_U;

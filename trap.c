@@ -15,6 +15,50 @@ struct spinlock tickslock;
 uint ticks;
 
 void
+print_va_mapping(pde_t *pgdir, uint va)
+{
+  if (!pgdir) {
+    cprintf("Invalid page directory.\n");
+    return;
+  }
+
+  uint pdx = PDX(va);      // Page Directory Index
+  uint ptx = PTX(va);      // Page Table Index
+  uint offset = va & 0xFFF; // Offset within the page
+
+  pde_t pde = pgdir[pdx];
+  cprintf("VA: 0x%x\n", va);
+  cprintf("PDE[%d] = 0x%x ", pdx, pde);
+
+  if (!(pde & PTE_P)) {
+    cprintf("(not present)\n");
+    return;
+  }
+
+  pte_t *pgtab = (pte_t*)P2V(PTE_ADDR(pde));
+  pte_t pte = pgtab[ptx];
+
+  cprintf("\n  -> Page Table at: %p (phys 0x%x)\n", pgtab, PTE_ADDR(pde));
+  cprintf("PTE[%d] = 0x%x ", ptx, pte);
+
+  if (!(pte & PTE_P)) {
+    cprintf("(not present)\n");
+    return;
+  }
+
+  uint pa = PTE_ADDR(pte) | offset;
+  cprintf("-> PA = 0x%x | Flags:", pa);
+
+  if (pte & PTE_P) cprintf(" P");
+  if (pte & PTE_W) cprintf(" W");
+  if (pte & PTE_U) cprintf(" U");
+  if (!(pte & PTE_W)) cprintf(" R"); // Read-only if W not set
+
+  cprintf("\n");
+}
+
+
+void
 tvinit(void)
 {
   int i;
@@ -77,7 +121,10 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
-
+  case T_PGFLT:
+    cprintf("Works, Page Fault raised\n");
+    print_va_mapping(myproc()->pgdir, rcr2());
+    panic("Page Fault\n");
   //PAGEBREAK: 13
   default:
     if(myproc() == 0 || (tf->cs&3) == 0){
