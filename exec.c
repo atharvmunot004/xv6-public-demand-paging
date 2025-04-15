@@ -132,6 +132,7 @@ invalidate_page_table(pde_t *pgdir, uint pdx)
     if (pte & PTE_P) {
       char *pa = P2V(PTE_ADDR(pte));  // Get physical frame
       kfree(pa);                      // Free physical memory
+      memset (pa, 0, PGSIZE);          // Optionally clear memory
       pgtab[i] = 0;                   // Clear PTE entirely
     }
   }
@@ -148,22 +149,20 @@ invalidate_page_table(pde_t *pgdir, uint pdx)
 
 
 struct inode*
-save_pgdir_to_file(char* name, pde_t *pgdir)
+save_pgdir_to_file(const char* name, pde_t *pgdir)
 {
   struct inode *ip;
-  char * fname;
   char *pa;
-  safestrcpy(fname, name, sizeof(fname));
   // Create a file with the name provided
 
-  cprintf ("save_pgdir_to_file called:\n");
+  cprintf ("save_pgdir_to_file called: %s\n", name);
   cprintf ("checkpoint00\n");
   begin_op();
 
   // Create the file
   // use the sysfile.c create function
   // struct inode *create(char *path, short type, short major, short minor);
-  ip = create(fname, T_FILE, 0, 0);
+  ip = create(name, T_FILE, 0, 0);
   if (ip == 0) {
     end_op();
     cprintf("Failed to create pgdir file\n");
@@ -211,7 +210,7 @@ done:
   // iunlock(ip);
   end_op();
 
-  cprintf("Saved %d bytes of page frame data to file \"%s\"\n", file_offset, fname);
+  cprintf("Saved %d bytes of page frame data to file \"%s\"\n", file_offset, name);
   return ip;
 }
 
@@ -333,15 +332,25 @@ exec(char *path, char **argv)
   curproc->tf->eip = elf.entry;  // main
   curproc->tf->esp = sp;
 
+  if (curproc->name[0] == 's' && curproc->name[1] == 'h') {
+    switchuvm(curproc);
+    freevm(oldpgdir);
+    return 0;
+  }
+  if (curproc->name[0] == 'i' && curproc->name[1] == 'n' && curproc->name[2] == 'i' && curproc->name[3] == 't') {
+    cprintf ("The init process is being executed\n");
+    switchuvm(curproc);
+    freevm(oldpgdir);
+    return 0;
+  }
   
   cprintf ("clearing the page directory:\n");
 
-  save_pgdir_to_file(curproc->name, pgdir);
+  cprintf ("process name: %s\n", last);
+  curproc->pgdir_inode = save_pgdir_to_file(curproc->name, pgdir);
   for (int i = 0; i < 512; i ++) {
     invalidate_page_table(pgdir, 0); // Invalidate the first page table
   }
-
-  
 
   switchuvm(curproc);
   freevm(oldpgdir);

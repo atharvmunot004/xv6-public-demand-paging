@@ -7,6 +7,9 @@
 #include "x86.h"
 #include "traps.h"
 #include "spinlock.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
@@ -57,6 +60,124 @@ print_va_mapping(pde_t *pgdir, uint va)
   cprintf("\n");
 }
 
+// Return the address of the PTE in page table pgdir
+// that corresponds to virtual address va.  If alloc!=0,
+// create any required page table pages.
+static pte_t *
+walkpgdir_dp_trap(pde_t *pgdir, const void *va, int alloc)
+{
+  cprintf ("walkpgdir_dp called:\n");
+  pde_t *pde;
+  pte_t *pgtab;
+
+  pde = &pgdir[PDX(va)];
+  cprintf ("va: %x\n", va);
+  cprintf("pde: %p\n", pde);
+  cprintf("PDE INDEX: %d\n\n", PDX(va));
+  if(*pde & PTE_P){
+    cprintf ("Page table already present\n");
+    cprintf ("pde: %x\n", *pde);
+    cprintf ("PDE_ADDR: %x\n", PTE_ADDR(*pde));
+    cprintf ("P2V: %x\n", P2V(PTE_ADDR(*pde)));
+    pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
+  } else {
+    if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
+      return 0;
+    // Make sure all those PTE_P bits are zero.
+    memset(pgtab, 0, PGSIZE);
+    // The permissions here are overly generous, but they can
+    // be further restricted by the permissions in the page table
+    // entries, if necessary.
+    *pde = V2P(pgtab) | PTE_P| PTE_W | PTE_U;
+  }
+  return &pgtab[PTX(va)];
+}
+
+
+
+// Create PTEs for virtual addresses starting at va that refer to
+// physical addresses starting at pa. va and size might not
+// be page-aligned.
+static int
+mappages_dp_trap(pde_t *pgdir, void *va, uint size, uint pa, int perm)
+{
+  cprintf ("mappags_dp called:\n");
+  cprintf ("pgdir: %x\n", pgdir);
+  cprintf ("va: %x\n", va);
+  cprintf ("siz: %d\n", size);
+  cprintf ("pa: %x\tpa: %d\n", pa, pa);
+  cprintf ("perm: %d\n\n", perm);
+  char *a, *last;
+  pte_t *pte;
+
+  a = (char*)PGROUNDDOWN((uint)va);
+  last = (char*)PGROUNDDOWN(((uint)va) + size - 1);
+  for(;;){
+    cprintf ("Mapping pages:\n");
+    cprintf ("a: %x\n", a);
+    cprintf ("last: %x\n", last);
+    if((pte = walkpgdir_dp_trap(pgdir, a, 1)) == 0)
+      return -1;
+    if(*pte & PTE_P)
+      panic("remap");
+    *pte = pa | perm | PTE_P;
+    if(a == last)
+      break;
+    a += PGSIZE;
+    pa += PGSIZE;
+  }
+  return 0;
+}
+
+void
+add_page(struct proc *p, uint va)
+{
+  uint pa;
+  pte_t *pgdir = p->pgdir;
+  uint pdx = PDX(va);      // Page Directory Index
+  uint ptx = PTX(va);      // Page Table Index
+  uint offset = va & 0xFFF; // Offset within the page
+  struct inode * pgdir_file = p->pgdir_inode;
+
+  // Allocate a new page
+  if ((pa = kalloc()) == 0) {
+    cprintf("add_page: out of memory\n");
+    panic ("add_page: out of memory");
+    return;
+  }
+  memset(pa, 0, PGSIZE); // Clear the page
+  cprintf ("The free address we got is: 0x%x\n", pa);
+
+  if (readi(pgdir_file, pa, (NPDENTRIES * pdx) + (PGSIZE * ptx)  , PGSIZE) != PGSIZE) {
+    cprintf("add_page: readi failed\n");
+    panic ("add_page: readi failed");
+    return;
+  }
+
+  uint perm = PTE_P | PTE_W | PTE_U;
+  // if (mappages_dp_trap(pgdir, va, PGSIZE, (uint)pa, perm) < 0) {
+  //   kfree(pa);
+  //   panic("map failed");
+  // }
+
+  pde_t * pde = &pgdir[PDX(va)];
+  pde_t * pte = &pgdir[PTX(va)];
+
+  pte = pa | perm | PTE_P;
+
+  cprintf ("the flags of the page table are: ");
+  if ((uint)pte & PTE_P) cprintf("P");
+  if ((uint)pte & PTE_W) cprintf("W");
+  if ((uint)pte & PTE_U) cprintf("U");
+  cprintf ("\n");
+
+  cprintf("pte: %x\n", pte);
+  cprintf("PTE_ADDR: %x\n", PTE_ADDR(pte));
+  cprintf("P2V: %x\n", P2V(PTE_ADDR(pte)));
+  // lcr3(V2P(p->pgdir)); // Flush the TLB
+  cprintf("Added page at VA: 0x%x -> PA: 0x%x\n", va, pa);
+  return;
+}
 
 void
 tvinit(void)
@@ -122,9 +243,19 @@ trap(struct trapframe *tf)
     lapiceoi();
     break;
   case T_PGFLT:
+    char * va = rcr2();
+    struct proc * p = myproc();
     cprintf("Works, Page Fault raised\n");
-    print_va_mapping(myproc()->pgdir, rcr2());
-    panic("Page Fault\n");
+    cprintf ("The address accessed is: 0x%x\n", va);
+    print_va_mapping(p->pgdir, va);
+    pte_t * pgdir = p->pgdir;
+    struct inode * pgdir_file = p->pgdir_inode; 
+    
+    add_page (p, va);
+
+    cprintf ("The page has been added to the physical memory\n");
+    lapiceoi();
+    break;
   //PAGEBREAK: 13
   default:
     if(myproc() == 0 || (tf->cs&3) == 0){
