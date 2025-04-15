@@ -94,7 +94,6 @@ walkpgdir_dp_trap(pde_t *pgdir, const void *va, int alloc)
 }
 
 
-
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned.
@@ -160,20 +159,20 @@ add_page(struct proc *p, uint va)
   //   panic("map failed");
   // }
 
-  pde_t * pde = &pgdir[PDX(va)];
-  pde_t * pte = &pgdir[PTX(va)];
+  pde_t * pgtab = &pgdir[PDX(va)];
+  char * pgframe = &pgtab[PTX(va)];
 
-  pte = pa | perm | PTE_P;
+  *pgframe = pa | perm | PTE_P;
 
   cprintf ("the flags of the page table are: ");
-  if ((uint)pte & PTE_P) cprintf("P");
-  if ((uint)pte & PTE_W) cprintf("W");
-  if ((uint)pte & PTE_U) cprintf("U");
+  if ((uint)*pgframe & PTE_P) cprintf("P");
+  if ((uint)*pgframe & PTE_W) cprintf("W");
+  if ((uint)*pgframe & PTE_U) cprintf("U");
   cprintf ("\n");
 
-  cprintf("pte: %x\n", pte);
-  cprintf("PTE_ADDR: %x\n", PTE_ADDR(pte));
-  cprintf("P2V: %x\n", P2V(PTE_ADDR(pte)));
+  cprintf("pte: %d\n", PTX(va));
+  cprintf("PTE_ADDR: %x\n", PTE_ADDR(*pgframe));
+  cprintf("P2V: %x\n", P2V(PTE_ADDR(*pgframe)));
   // lcr3(V2P(p->pgdir)); // Flush the TLB
   cprintf("Added page at VA: 0x%x -> PA: 0x%x\n", va, pa);
   return;
